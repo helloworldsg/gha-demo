@@ -1,0 +1,11 @@
+# Default owners for everything in the repo
+* @your-team
+
+# CI/CD workflow owners
+/.github/ @devops-team @your-team
+
+# Java code owners
+/src/ @backend-team
+
+# Documentation owners
+*.md @docs-team

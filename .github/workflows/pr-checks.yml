@@ -1,0 +1,88 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  JAVA_VERSION: '21'
+
+jobs:
+  # ============================================
+  # Quick validation for PRs
+  # ============================================
+  validate:
+    name: Validate PR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build and test
+        run: ./mvnw verify -B
+
+      - name: Check for breaking changes
+        run: |
+          # Check if this PR contains breaking changes
+          PR_BODY="${{ github.event.pull_request.body }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          
+          if echo "$PR_TITLE" | grep -qE "^(feat!|fix!|BREAKING CHANGE):"; then
+            echo "⚠️ This PR contains breaking changes!"
+            echo "::warning::This PR contains breaking changes. Make sure to update documentation."
+          fi
+
+      - name: Add PR comment with test results
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            let body = '## PR Validation Results\n\n';
+            body += '| Check | Status |\n';
+            body += '|-------|--------|\n';
+            body += `| Build & Test | ${{ job.status == 'success' && '✅ Passed' || '❌ Failed' }} |\n`;
+            
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.find(c => 
+              c.user.type === 'Bot' && 
+              c.body.includes('PR Validation Results')
+            );
+            
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }

@@ -1,0 +1,28 @@
+# Build artifacts
+target/
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+docs/
+
+# Maven wrapper (will be downloaded during build)
+# Uncomment if you want to include it in image
+# !.mvn/
+
+# CI/CD
+.github/

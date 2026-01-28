@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.github/CODEOWNERS'
+      - '.github/dependabot.yml'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get previous tag
+        id: prev_tag
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "tag=$PREV_TAG" >> $GITHUB_OUTPUT
+          echo "Previous tag: $PREV_TAG"
+
+      - name: Determine version bump
+        id: version
+        run: |
+          # Get commits since last tag
+          if [ "${{ steps.prev_tag.outputs.tag }}" = "v0.0.0" ]; then
+            COMMITS=$(git log --oneline)
+          else
+            COMMITS=$(git log ${{ steps.prev_tag.outputs.tag }}..HEAD --oneline)
+          fi
+          
+          # Determine bump type based on conventional commits
+          if echo "$COMMITS" | grep -qE "^[a-f0-9]+ (BREAKING CHANGE|feat!|fix!):"; then
+            BUMP="major"
+          elif echo "$COMMITS" | grep -qE "^[a-f0-9]+ feat(\(.+\))?:"; then
+            BUMP="minor"
+          else
+            BUMP="patch"
+          fi
+          
+          # Calculate new version
+          PREV="${{ steps.prev_tag.outputs.tag }}"
+          PREV=${PREV#v}  # Remove 'v' prefix
+          
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$PREV"
+          
+          case $BUMP in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+          
+          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "bump=$BUMP" >> $GITHUB_OUTPUT
+          echo "New version: $NEW_VERSION (bump: $BUMP)"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          echo "## What's Changed" > CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          
+          if [ "${{ steps.prev_tag.outputs.tag }}" = "v0.0.0" ]; then
+            git log --oneline --pretty=format:"- %s (%h)" >> CHANGELOG.md
+          else
+            git log ${{ steps.prev_tag.outputs.tag }}..HEAD --oneline --pretty=format:"- %s (%h)" >> CHANGELOG.md
+          fi
+          
+          echo "" >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.prev_tag.outputs.tag }}...${{ steps.version.outputs.version }}" >> CHANGELOG.md
+          
+          cat CHANGELOG.md
+
+      - name: Create Git tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a ${{ steps.version.outputs.version }} -m "Release ${{ steps.version.outputs.version }}"
+          git push origin ${{ steps.version.outputs.version }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+
+      - name: Release summary
+        run: |
+          echo "## Release Created" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Bump Type**: ${{ steps.version.outputs.bump }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Previous**: ${{ steps.prev_tag.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
