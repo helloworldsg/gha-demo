@@ -1,0 +1,254 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (format: v2026.01.0)'
+        required: true
+        type: string
+      release_type:
+        description: 'Release type'
+        required: true
+        type: choice
+        options:
+          - rc      # Release candidate
+          - final   # Final release (no suffix)
+        default: 'rc'
+      skip_tests:
+        description: 'Skip tests (use for hotfixes only)'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ============================================
+  # Validate Input
+  # ============================================
+  validate:
+    name: Validate Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      tag: ${{ steps.generate-tag.outputs.tag }}
+      rc_number: ${{ steps.generate-tag.outputs.rc_number }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate version format
+        id: validate
+        run: |
+          VERSION="${{ inputs.version }}"
+          
+          # Validate format: vYYYY.MM.N (e.g., v2026.01.0)
+          if [[ ! "$VERSION" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]+$ ]]; then
+            echo "::error::Invalid version format: $VERSION"
+            echo "::error::Expected format: vYYYY.MM.N (e.g., v2026.01.0)"
+            exit 1
+          fi
+          
+          # Extract components for validation
+          YEAR=$(echo "$VERSION" | sed -n 's/^v\([0-9]\{4\}\)\..*/\1/p')
+          MONTH=$(echo "$VERSION" | sed -n 's/^v[0-9]\{4\}\.\([0-9]\{2\}\)\..*/\1/p')
+          
+          # Validate year (reasonable range)
+          if [ "$YEAR" -lt 2024 ] || [ "$YEAR" -gt 2100 ]; then
+            echo "::error::Invalid year in version: $YEAR"
+            exit 1
+          fi
+          
+          # Validate month (01-12)
+          if [ "$MONTH" -lt 1 ] || [ "$MONTH" -gt 12 ]; then
+            echo "::error::Invalid month in version: $MONTH"
+            exit 1
+          fi
+          
+          echo "✅ Version format valid: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Generate release tag
+        id: generate-tag
+        run: |
+          VERSION="${{ steps.validate.outputs.version }}"
+          RELEASE_TYPE="${{ inputs.release_type }}"
+          
+          if [ "$RELEASE_TYPE" = "final" ]; then
+            # Final release - just use the version
+            TAG="$VERSION"
+            RC_NUMBER=""
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+            echo "rc_number=" >> $GITHUB_OUTPUT
+          else
+            # RC release - find next rc number
+            # Get all existing rc tags for this version
+            EXISTING_RCS=$(git tag -l "${VERSION}-rc.*" | sort -V)
+            
+            if [ -z "$EXISTING_RCS" ]; then
+              # No existing RCs, start with rc.1
+              RC_NUMBER=1
+            else
+              # Get the highest RC number and increment
+              LAST_RC=$(echo "$EXISTING_RCS" | tail -1)
+              LAST_RC_NUM=$(echo "$LAST_RC" | sed -n 's/.*-rc\.\([0-9]*\)$/\1/p')
+              RC_NUMBER=$((LAST_RC_NUM + 1))
+            fi
+            
+            TAG="${VERSION}-rc.${RC_NUMBER}"
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+            echo "rc_number=$RC_NUMBER" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "## 🏷️ Release Tag" >> $GITHUB_STEP_SUMMARY
+          echo "- **Input Version**: $VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "- **Release Type**: $RELEASE_TYPE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Generated Tag**: $TAG" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check if tag exists
+        run: |
+          TAG="${{ steps.generate-tag.outputs.tag }}"
+          
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists!"
+            exit 1
+          fi
+          
+          echo "✅ Tag $TAG is available"
+
+  # ============================================
+  # Build & Test
+  # ============================================
+  build-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    needs: validate
+    if: inputs.skip_tests == false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build and test
+        run: ./mvnw verify -B
+
+      - name: Test summary
+        run: |
+          echo "## ✅ Build & Test Passed" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================
+  # Create Release
+  # ============================================
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [validate, build-test]
+    if: always() && needs.validate.result == 'success' && (needs.build-test.result == 'success' || needs.build-test.result == 'skipped')
+    
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build application
+        run: ./mvnw package -DskipTests -B
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.validate.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create Git tag
+        run: |
+          TAG="${{ needs.validate.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          TAG="${{ needs.validate.outputs.tag }}"
+          VERSION="${{ needs.validate.outputs.version }}"
+          
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          
+          echo "## What's Changed" > CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          
+          if [ -n "$PREV_TAG" ]; then
+            git log ${PREV_TAG}..HEAD --oneline --pretty=format:"- %s (%h)" >> CHANGELOG.md
+          else
+            git log --oneline --pretty=format:"- %s (%h)" -20 >> CHANGELOG.md
+          fi
+          
+          echo "" >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          echo "### Docker Image" >> CHANGELOG.md
+          echo "\`\`\`" >> CHANGELOG.md
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$TAG" >> CHANGELOG.md
+          echo "\`\`\`" >> CHANGELOG.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.validate.outputs.tag }}
+          name: ${{ inputs.release_type == 'rc' && format('Release Candidate {0}', needs.validate.outputs.tag) || format('Release {0}', needs.validate.outputs.tag) }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: ${{ inputs.release_type == 'rc' }}
+          files: |
+            target/*.jar
+
+      - name: Release summary
+        run: |
+          echo "## 🚀 Release Created" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Tag** | ${{ needs.validate.outputs.tag }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Type** | ${{ inputs.release_type }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Docker Image** | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.validate.outputs.tag }}\` |" >> $GITHUB_STEP_SUMMARY

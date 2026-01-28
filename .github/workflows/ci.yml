@@ -159,12 +159,101 @@ jobs:
         run: ./mvnw verify -DskipTests -B
 
   # ============================================
+  # Security: Dependency Scan (runs in parallel)
+  # ============================================
+  security-deps:
+    name: Dependency Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: maven
+
+      - name: OWASP Dependency Check
+        run: |
+          ./mvnw org.owasp:dependency-check-maven:check -B || true
+          echo "## 🔐 Dependency Scan" >> $GITHUB_STEP_SUMMARY
+          if [ -f target/dependency-check-report.html ]; then
+            echo "OWASP report generated" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload OWASP report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-check-report
+          path: target/dependency-check-report.*
+          if-no-files-found: ignore
+
+  # ============================================
+  # Security: SAST Scan (runs in parallel)
+  # ============================================
+  security-sast:
+    name: SAST Scan
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: java
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build for CodeQL
+        run: ./mvnw compile -DskipTests -B
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:java"
+
+  # ============================================
+  # Security: Secret Scan (runs in parallel)
+  # ============================================
+  security-secrets:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+        continue-on-error: true
+
+  # ============================================
   # Docker Build & Push Job
   # ============================================
   docker:
     name: Docker Build & Push
     runs-on: ubuntu-latest
-    needs: [build, unit-test, code-quality]
+    needs: [build, unit-test, code-quality, security-deps, security-sast, security-secrets]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     
     permissions:
@@ -218,6 +307,22 @@ jobs:
           echo "- **Tags**: ${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Digest**: ${{ steps.build-push.outputs.digest }}" >> $GITHUB_STEP_SUMMARY
 
+      - name: Scan container for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+        continue-on-error: true
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+        continue-on-error: true
+
   # ============================================
   # Deploy to Development
   # ============================================
@@ -243,12 +348,12 @@ jobs:
           echo "✅ Smoke tests passed"
 
   # ============================================
-  # Deploy to SIT
+  # Deploy to SIT (parallel with DEV)
   # ============================================
   deploy-sit:
     name: Deploy SIT
     runs-on: ubuntu-latest
-    needs: [docker, deploy-dev]
+    needs: docker
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment:
       name: sit
@@ -267,12 +372,12 @@ jobs:
           echo "✅ Integration tests passed"
 
   # ============================================
-  # Deploy to UAT (Requires Approval)
+  # Deploy to UAT (waits for DEV + SIT)
   # ============================================
   deploy-uat:
     name: Deploy UAT
     runs-on: ubuntu-latest
-    needs: [docker, deploy-sit]
+    needs: [docker, deploy-dev, deploy-sit]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment:
       name: uat
