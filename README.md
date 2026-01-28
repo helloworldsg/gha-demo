@@ -30,9 +30,8 @@ gha-demo/
 │   │   ├── ci.yml              # Main CI pipeline
 │   │   ├── deploy.yml          # Environment deployments
 │   │   ├── release.yml         # Semantic versioning
-│   │   ├── pr-checks.yml       # PR validation
-│   │   └── reusable-deploy.yml # Reusable deployment
-│   ├── dependabot.yml          # Dependency updates
+│   │   └── pr-checks.yml       # PR validation
+│   └── dependabot.yml          # Dependency updates
 │   └── CODEOWNERS              # Review assignments
 ├── src/
 │   ├── main/java/...           # Application code
