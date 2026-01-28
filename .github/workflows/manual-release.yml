@@ -6,7 +6,10 @@ on:
       version:
         description: 'Version number (format: v2026.01.0)'
         required: true
-        type: string
+        type: choice
+        options:
+          - v2025.10.0
+          - v2026.01.0
       release_type:
         description: 'Release type'
         required: true
