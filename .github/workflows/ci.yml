@@ -219,7 +219,7 @@ jobs:
   docker:
     name: Docker Build & Push
     runs-on: ubuntu-latest
-    needs: [build, unit-test, code-quality]
+    needs: [build, unit-test, code-quality, security-sast, security-secrets]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     
     permissions:
@@ -295,7 +295,7 @@ jobs:
   deploy-dev:
     name: Deploy DEV
     runs-on: ubuntu-latest
-    needs: docker
+    needs: [docker, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment:
       name: development
@@ -319,7 +319,7 @@ jobs:
   deploy-sit:
     name: Deploy SIT
     runs-on: ubuntu-latest
-    needs: docker
+    needs: [docker, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment:
       name: sit
@@ -343,7 +343,7 @@ jobs:
   deploy-uat:
     name: Deploy UAT
     runs-on: ubuntu-latest
-    needs: [docker, deploy-dev, deploy-sit]
+    needs: [deploy-sit, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment:
       name: uat
@@ -365,23 +365,62 @@ jobs:
   # ============================================
   # Pipeline Summary
   # ============================================
-  summary:
-    name: Pipeline Complete
+  release-review:
+    name: Release Review
     runs-on: ubuntu-latest
     needs: [build, unit-test, code-quality, security-sast, security-secrets, docker, deploy-dev, deploy-sit, deploy-uat]
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
 
+    permissions:
+      issues: write
+
     steps:
-      - name: Pipeline Summary
+      - name: Generate Pipeline Summary
         run: |
-          echo "## 🚀 CI/CD Pipeline Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Build | ${{ needs.build.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Tests | ${{ needs.unit-test.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Quality | ${{ needs.code-quality.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Docker | ${{ needs.docker.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| DEV | ${{ needs.deploy-dev.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| SIT | ${{ needs.deploy-sit.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| UAT | ${{ needs.deploy-uat.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          # Construct summary content to file
+          {
+            echo "## 🚀 CI/CD Pipeline Summary"
+            echo ""
+            echo "| Stage | Status |"
+            echo "|-------|--------|"
+            echo "| Build | ${{ needs.build.result == 'success' && '✅' || '❌' }} |"
+            echo "| Tests | ${{ needs.unit-test.result == 'success' && '✅' || '❌' }} |"
+            echo "| Quality | ${{ needs.code-quality.result == 'success' && '✅' || '❌' }} |"
+            echo "| Docker | ${{ needs.docker.result == 'success' && '✅' || '❌' }} |"
+            echo "| DEV | ${{ needs.deploy-dev.result == 'success' && '✅' || '❌' }} |"
+            echo "| SIT | ${{ needs.deploy-sit.result == 'success' && '✅' || '❌' }} |"
+            echo "| UAT | ${{ needs.deploy-uat.result == 'success' && '✅' || '❌' }} |"
+          } > release_summary.md
+          
+          # Output to Step Summary
+          cat release_summary.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Request Release Approval
+        uses: trstringer/manual-approval@v1
+        with:
+          secret: ${{ secrets.GITHUB_TOKEN }}
+          approvers: ${{ github.actor }}
+          minimum-approvals: 1
+          issue-title: "🚀 Approval Required: Release to Customer"
+          issue-body-file-path: release_summary.md
+          exclude-workflow-initiator-as-approver: false
+
+  # ============================================
+  # Release to Customer
+  # ============================================
+  release-customer:
+    name: Release Customer
+    runs-on: ubuntu-latest
+    needs: release-review
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment:
+      name: customer
+      url: https://customer.example.com
+  
+    steps:
+      - name: Release to Customer
+        run: |
+          echo "🚀 Releasing to Customer..."
+          # Note: Accessing version from build needs explicit dependency propagation or re-fetching if not available.
+          # For now, we assume implicit context or just print static info as placeholder.
+          echo "Releasing to customer environment..."
