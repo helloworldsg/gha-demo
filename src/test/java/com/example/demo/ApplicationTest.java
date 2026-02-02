@@ -10,4 +10,9 @@ class ApplicationTest {
     void contextLoads() {
         // Verifies that the Spring application context loads successfully
     }
+
+    @Test
+    void simplePass() {
+        assert (true);
+    }
 }
