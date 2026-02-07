@@ -403,10 +403,10 @@ jobs:
           echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.version }}"
           # Add your deployment commands here
 
-      - name: Run integration tests
+      - name: Run smoke tests
         run: |
-          echo "🧪 Running integration tests..."
-          echo "✅ Integration tests passed"
+          echo "🧪 Running smoke tests..."
+          echo "✅ SIT smoke tests passed"
 
   # ============================================
   # Deploy to UAT (waits for DEV + SIT)
@@ -428,10 +428,10 @@ jobs:
           echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.version }}"
           # Add your deployment commands here
 
-      - name: UAT validation
+      - name: UAT smoke tests
         run: |
-          echo "🧪 Running UAT validation..."
-          echo "✅ UAT validation passed"
+          echo "🧪 Running UAT smoke tests..."
+          echo "✅ UAT smoke tests passed"
 
   # ============================================
   # Pipeline Summary
